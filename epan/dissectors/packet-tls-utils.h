@@ -319,6 +319,14 @@ typedef struct _SslFlow {
 
 typedef struct _SslDecompress SslDecompress;
 
+typedef struct _TCPLSStreamCtx {
+    guint32 streamid;
+    guint32 iv_offset;
+    guint64 client_seq;
+    guint64 server_seq;
+    gboolean is_client;
+} TCPLSStreamCtx;
+
 typedef struct _SslDecoder {
     const SslCipherSuite *cipher_suite;
     gint compression;
@@ -328,6 +336,9 @@ typedef struct _SslDecoder {
     SSL_CIPHER_CTX evp;
     SslDecompress *decomp;
     guint64 seq;    /**< Implicit (TLS) or explicit (DTLS) record sequence number. */
+    wmem_array_t *tcpls_streams;
+    TCPLSStreamCtx **used_stream;
+    gboolean is_tcpls_client; // FIXME ugly
     guint16 epoch;
     SslFlow *flow;
     StringInfo app_traffic_secret;  /**< TLS 1.3 application traffic secret (if applicable), wmem file scope. */
@@ -456,6 +467,8 @@ typedef struct _SslSession {
     } ConnectionId;
     */
 #define DTLS_MAX_CID_LENGTH 256
+    wmem_array_t *tcpls_streams;
+    TCPLSStreamCtx *tcpls_used_stream;
 
     guint8 *client_cid;
     guint8 *server_cid;
@@ -2430,6 +2443,8 @@ ssl_common_dissect_t name = {   \
 extern void
 ssl_common_register_ssl_alpn_dissector_table(const char *name,
     const char *ui_name, const int proto);
+
+extern void ssl_common_register_extensions_dissector_table(const char *name, const char *ui_name, const int proto);
 
 extern void
 ssl_common_register_dtls_alpn_dissector_table(const char *name,

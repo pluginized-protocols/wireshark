@@ -66,6 +66,7 @@
 #include <wsutil/str_util.h>
 #include <wsutil/strtoi.h>
 #include <wsutil/rsa.h>
+#include <tvbuff-int.h>
 #include "packet-tcp.h"
 #include "packet-x509af.h"
 #include "packet-tls.h"
@@ -250,6 +251,7 @@ static uat_t              *ssldecrypt_uat           = NULL;
 static const gchar        *ssl_keys_list            = NULL;
 #endif
 static dissector_table_t   ssl_associations         = NULL;
+static dissector_table_t   tls_record_associations  = NULL;
 static dissector_handle_t  tls_handle               = NULL;
 static StringInfo          ssl_compressed_data      = {NULL, 0};
 static StringInfo          ssl_decrypted_data       = {NULL, 0};
@@ -1949,12 +1951,60 @@ dissect_ssl3_record(tvbuff_t *tvb, packet_info *pinfo,
         add_new_data_source(pinfo, decrypted, "Decrypted TLS");
         if (session->version == TLSV1DOT3_VERSION) {
             content_type = record->type;
+            ssl_debug_printf("TrueType is %d\n", content_type);
             ti = proto_tree_add_uint(ssl_record_tree, hf_tls_record_content_type,
                                      tvb, content_type_offset, 1, record->type);
             proto_item_set_generated(ti);
         }
     }
     ssl_check_record_length(&dissect_ssl3_hf, pinfo, (ContentType)content_type, record_length, length_pi, version, decrypted);
+
+    if (content_type == 0x1a) {  // TCPLS Control
+        tvbuff_t *next_tvb = tvb_new_subset_remaining(decrypted, 0);
+        guint32 tcpls_message_type = tvb_get_ntohl(next_tvb, next_tvb->length - 4);
+        ssl_debug_printf("TCPLS control message type is %u\n", tcpls_message_type);
+        if (tcpls_message_type == 12) {
+            guint32 streamid = tvb_get_ntohl(next_tvb, 0);
+            guint32 transportid = tvb_get_ntohl(next_tvb, 4);
+            guint32 iv_offset = tvb_get_ntohl(next_tvb, 8);
+            ssl_debug_printf("TCPLS STREAM ATTACHED %u %u %u\n", streamid, transportid, iv_offset);
+
+            if (ssl) {
+                SslDecoder *decoder = is_from_server ? ssl->server : ssl->client;
+                if (decoder->tcpls_streams) {
+                    TCPLSStreamCtx *ctx = (TCPLSStreamCtx *) wmem_alloc(wmem_file_scope(), sizeof(TCPLSStreamCtx));
+                    ctx->streamid = streamid;
+                    ctx->iv_offset = iv_offset;
+                    ctx->is_client = !is_from_server;
+                    ctx->server_seq = 0;
+                    ctx->client_seq = 0;
+                    wmem_array_append_one(decoder->tcpls_streams, ctx);
+                    ssl_debug_printf("New stream registered\n");
+                }
+            }
+        }
+    } else if (content_type == 0x1b) {  // TCPLS Data
+        TCPLSStreamCtx *stream = session->tcpls_used_stream;
+        if (!stream) {
+            proto_item_set_text(ssl_record_tree,
+                                "%s Record Layer: %s",
+                                val_to_str_const(version, ssl_version_short_names, "SSL"),
+                                "TCPLS Data");
+            col_append_sep_fstr(pinfo->cinfo, COL_INFO, ", ", "DATA");
+        } else {
+            proto_item_set_text(ssl_record_tree,
+                                "%s Record Layer: %s, Stream: %u",
+                                val_to_str_const(version, ssl_version_short_names, "SSL"),
+                                "TCPLS Data", stream->streamid);
+            col_append_sep_fstr(pinfo->cinfo, COL_INFO, ", ", "DATA(%u)", stream->streamid);
+        }
+        col_set_str(pinfo->cinfo, COL_PROTOCOL, "TCPLS");
+        proto_tree_add_item(ssl_record_tree, hf_tls_record_appdata, tvb,
+                            offset, record_length, ENC_NA);
+
+        offset += record_length; /* skip to end of record */
+        return offset;
+    }
 
     switch ((ContentType) content_type) {
     case SSL_ID_CHG_CIPHER_SPEC:
@@ -2023,6 +2073,7 @@ dissect_ssl3_record(tvbuff_t *tvb, packet_info *pinfo,
              * Try to find a port-based protocol and use it if there is no
              * heuristics dissector (see process_ssl_payload). */
             app_handle = dissector_get_uint_handle(ssl_associations, pinfo->srcport);
+            ssl_debug_printf("app handle for srcport: %d is %p\n", pinfo->srcport, app_handle);
             if (!app_handle) app_handle = dissector_get_uint_handle(ssl_associations, pinfo->destport);
         }
 
@@ -2040,6 +2091,8 @@ dissect_ssl3_record(tvbuff_t *tvb, packet_info *pinfo,
             ti = proto_tree_add_string(ssl_record_tree, hf_tls_record_appdata_proto, tvb, 0, 0, dissector_handle_get_dissector_name(app_handle));
             proto_item_set_generated(ti);
         }
+
+        ssl_debug_printf("app handle %p, decrypted %p\n", app_handle, decrypted);
 
         if (decrypted) {
             dissect_ssl_payload(decrypted, pinfo, tree, session, record, app_handle);
@@ -2077,6 +2130,19 @@ dissect_ssl3_record(tvbuff_t *tvb, packet_info *pinfo,
         }
         break;
     case SSL_ID_TLS12_CID:
+        break;
+    default: {
+          ssl_debug_printf("content type switch fallback for type %d\n", content_type);
+          ssl_debug_flush();
+          dissector_handle_t record_handle = dissector_get_uint_handle(tls_record_associations, content_type);
+          ssl_debug_printf("record handle for record %d is %p\n", content_type, record_handle);
+          ssl_debug_printf("record handle %p, decrypted %p\n", record_handle, decrypted);
+
+          if (record_handle && decrypted) {
+            tvbuff_t *next_tvb = tvb_new_subset_remaining(decrypted, 0);
+            call_dissector(record_handle, next_tvb, pinfo, tree);
+          }
+        }
         break;
     }
     offset += record_length; /* skip to end of record */
@@ -4477,6 +4543,7 @@ proto_register_tls(void)
                                         "TLS", "tls");
 
     ssl_associations = register_dissector_table("tls.port", "TLS Port", proto_tls, FT_UINT16, BASE_DEC);
+    tls_record_associations = register_dissector_table("tls.record", "TLS Record", proto_tls, FT_UINT8, BASE_DEC);
     register_dissector_table_alias(ssl_associations, "ssl.port");
 
     /* Required function calls to register the header fields and
@@ -4556,6 +4623,8 @@ proto_register_tls(void)
     ssl_common_register_ssl_alpn_dissector_table("tls.alpn",
         "SSL/TLS Application-Layer Protocol Negotiation (ALPN) Protocol IDs",
         proto_tls);
+
+    ssl_common_register_extensions_dissector_table("tls.extensions", "TLS Handshake Extensions", proto_tls);
 
     tls_handle = register_dissector("tls", dissect_ssl, proto_tls);
     register_dissector("tls13-handshake", dissect_tls13_handshake, proto_tls);

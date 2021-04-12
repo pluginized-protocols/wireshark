@@ -1901,6 +1901,7 @@ static const bytes_string ct_logids[] = {
  */
 static dissector_table_t ssl_alpn_dissector_table;
 static dissector_table_t dtls_alpn_dissector_table;
+static dissector_table_t tls_extensions_associations;
 
 /*
  * Special cases for prefix matching of the ALPN, if the ALPN includes
@@ -3648,6 +3649,8 @@ ssl_create_decoder(const SslCipherSuite *cipher_suite, gint cipher_algo,
         ssl_data_set(&dec->write_iv, iv, iv_length);
     }
     dec->seq = 0;
+    dec->used_stream = NULL;
+    dec->tcpls_streams = NULL;
     dec->decomp = ssl_create_decompressor(compression);
     wmem_register_callback(wmem_file_scope(), ssl_decoder_destroy_cb, dec);
 
@@ -4188,12 +4191,14 @@ create_decoders:
         ssl_debug_printf("%s can't init client decoder\n", G_STRFUNC);
         goto fail;
     }
+    ssl_session->client_new->tcpls_streams = ssl_session->session.tcpls_streams;
     ssl_debug_printf("%s ssl_create_decoder(server)\n", G_STRFUNC);
     ssl_session->server_new = ssl_create_decoder(cipher_suite, cipher_algo, ssl_session->session.compression, s_mk, s_wk, s_iv, write_iv_len);
     if (!ssl_session->server_new) {
         ssl_debug_printf("%s can't init client decoder\n", G_STRFUNC);
         goto fail;
     }
+    ssl_session->server_new->tcpls_streams = ssl_session->session.tcpls_streams;
 
     /* Continue the SSL stream after renegotiation with new keys. */
     ssl_session->client_new->flow = ssl_session->client ? ssl_session->client->flow : ssl_create_flow();
@@ -4559,49 +4564,48 @@ tls_decrypt_aead_record(SslDecryptSession *ssl, SslDecoder *decoder,
 #else
         const guchar *cid _U_, guint8 cidl _U_,
 #endif
-        StringInfo *out_str, guint *outl)
-{
+        StringInfo *out_str, guint *outl) {
     /* RFC 5246 (TLS 1.2) 6.2.3.3 defines the TLSCipherText.fragment as:
      * GenericAEADCipher: { nonce_explicit, [content] }
      * In TLS 1.3 this explicit nonce is gone.
      * With AES GCM/CCM, "[content]" is actually the concatenation of the
      * ciphertext and authentication tag.
      */
-    const guint16   version = ssl->session.version;
-    const gboolean  is_v12 = version == TLSV1DOT2_VERSION || version == DTLSV1DOT2_VERSION;
-    gcry_error_t    err;
-    const guchar   *explicit_nonce = NULL, *ciphertext;
-    guint           ciphertext_len, auth_tag_len;
-    guchar          nonce[12];
+    const guint16 version = ssl->session.version;
+    const gboolean is_v12 = version == TLSV1DOT2_VERSION || version == DTLSV1DOT2_VERSION;
+    gcry_error_t err = 0;
+    const guchar *explicit_nonce = NULL, *ciphertext;
+    guint ciphertext_len, auth_tag_len;
+    guchar nonce[12];
     const ssl_cipher_mode_t cipher_mode = decoder->cipher_suite->mode;
 #ifdef HAVE_LIBGCRYPT_AEAD
-    const gboolean  is_cid = ct == SSL_ID_TLS12_CID && version == DTLSV1DOT2_VERSION;
-    const guint8    draft_version = ssl->session.tls13_draft_version;
-    const guchar   *auth_tag_wire;
-    guchar          auth_tag_calc[16];
+    const gboolean is_cid = ct == SSL_ID_TLS12_CID && version == DTLSV1DOT2_VERSION;
+    const guint8 draft_version = ssl->session.tls13_draft_version;
+    const guchar *auth_tag_wire;
+    guchar auth_tag_calc[16];
 #else
     guchar          nonce_with_counter[16] = { 0 };
 #endif
 
     switch (cipher_mode) {
-    case MODE_GCM:
-    case MODE_CCM:
-    case MODE_POLY1305:
-        auth_tag_len = 16;
-        break;
-    case MODE_CCM_8:
-        auth_tag_len = 8;
-        break;
-    default:
-        ssl_debug_printf("%s unsupported cipher!\n", G_STRFUNC);
-        return FALSE;
+        case MODE_GCM:
+        case MODE_CCM:
+        case MODE_POLY1305:
+            auth_tag_len = 16;
+            break;
+        case MODE_CCM_8:
+            auth_tag_len = 8;
+            break;
+        default:
+            ssl_debug_printf("%s unsupported cipher!\n", G_STRFUNC);
+            return FALSE;
     }
 
     /* Parse input into explicit nonce (TLS 1.2 only), ciphertext and tag. */
     if (is_v12 && cipher_mode != MODE_POLY1305) {
         if (inl < EXPLICIT_NONCE_LEN + auth_tag_len) {
             ssl_debug_printf("%s input %d is too small for explicit nonce %d and auth tag %d\n",
-                    G_STRFUNC, inl, EXPLICIT_NONCE_LEN, auth_tag_len);
+                             G_STRFUNC, inl, EXPLICIT_NONCE_LEN, auth_tag_len);
             return FALSE;
         }
         explicit_nonce = in;
@@ -4622,123 +4626,146 @@ tls_decrypt_aead_record(SslDecryptSession *ssl, SslDecoder *decoder,
     auth_tag_wire = ciphertext + ciphertext_len;
 #endif
 
-    /*
-     * Nonce construction is version-specific. Note that AEAD_CHACHA20_POLY1305
-     * (RFC 7905) uses a nonce construction similar to TLS 1.3.
-     */
-    if (is_v12 && cipher_mode != MODE_POLY1305) {
-        DISSECTOR_ASSERT(decoder->write_iv.data_len == IMPLICIT_NONCE_LEN);
-        /* Implicit (4) and explicit (8) part of nonce. */
-        memcpy(nonce, decoder->write_iv.data, IMPLICIT_NONCE_LEN);
-        memcpy(nonce + IMPLICIT_NONCE_LEN, explicit_nonce, EXPLICIT_NONCE_LEN);
+    for (guint i = 0; i < (decoder->tcpls_streams ? wmem_array_get_count(decoder->tcpls_streams) : 0) + 1; i++) {
+        /*
+         * Nonce construction is version-specific. Note that AEAD_CHACHA20_POLY1305
+         * (RFC 7905) uses a nonce construction similar to TLS 1.3.
+         */
+        if (is_v12 && cipher_mode != MODE_POLY1305) {
+            DISSECTOR_ASSERT(decoder->write_iv.data_len == IMPLICIT_NONCE_LEN);
+            /* Implicit (4) and explicit (8) part of nonce. */
+            memcpy(nonce, decoder->write_iv.data, IMPLICIT_NONCE_LEN);
+            memcpy(nonce + IMPLICIT_NONCE_LEN, explicit_nonce, EXPLICIT_NONCE_LEN);
 
 #ifndef HAVE_LIBGCRYPT_AEAD
-        if (cipher_mode == MODE_GCM) {
-            /* NIST SP 800-38D, sect. 7.2 says that the 32-bit counter part starts
-             * at 1, and gets incremented before passing to the block cipher. */
-            memcpy(nonce_with_counter, nonce, IMPLICIT_NONCE_LEN + EXPLICIT_NONCE_LEN);
-            nonce_with_counter[IMPLICIT_NONCE_LEN + EXPLICIT_NONCE_LEN + 3] = 2;
-        } else if (cipher_mode == MODE_CCM || cipher_mode == MODE_CCM_8) {
-            /* The nonce for CCM and GCM are the same, but the nonce is used as input
-             * in the CCM algorithm described in RFC 3610. The nonce generated here is
-             * the one from RFC 3610 sect 2.3. Encryption. */
-            /* Flags: (L-1) ; L = 16 - 1 - nonceSize */
-            nonce_with_counter[0] = 3 - 1;
-            memcpy(nonce_with_counter + 1, nonce, IMPLICIT_NONCE_LEN + EXPLICIT_NONCE_LEN);
-            /* struct { opaque salt[4]; opaque nonce_explicit[8] } CCMNonce (RFC 6655) */
-            nonce_with_counter[IMPLICIT_NONCE_LEN + EXPLICIT_NONCE_LEN + 3] = 1;
-        } else {
-            g_assert_not_reached();
-        }
+            if (cipher_mode == MODE_GCM) {
+                /* NIST SP 800-38D, sect. 7.2 says that the 32-bit counter part starts
+                 * at 1, and gets incremented before passing to the block cipher. */
+                memcpy(nonce_with_counter, nonce, IMPLICIT_NONCE_LEN + EXPLICIT_NONCE_LEN);
+                nonce_with_counter[IMPLICIT_NONCE_LEN + EXPLICIT_NONCE_LEN + 3] = 2;
+            } else if (cipher_mode == MODE_CCM || cipher_mode == MODE_CCM_8) {
+                /* The nonce for CCM and GCM are the same, but the nonce is used as input
+                 * in the CCM algorithm described in RFC 3610. The nonce generated here is
+                 * the one from RFC 3610 sect 2.3. Encryption. */
+                /* Flags: (L-1) ; L = 16 - 1 - nonceSize */
+                nonce_with_counter[0] = 3 - 1;
+                memcpy(nonce_with_counter + 1, nonce, IMPLICIT_NONCE_LEN + EXPLICIT_NONCE_LEN);
+                /* struct { opaque salt[4]; opaque nonce_explicit[8] } CCMNonce (RFC 6655) */
+                nonce_with_counter[IMPLICIT_NONCE_LEN + EXPLICIT_NONCE_LEN + 3] = 1;
+            } else {
+                g_assert_not_reached();
+            }
 #endif
-    } else if (version == TLSV1DOT3_VERSION || cipher_mode == MODE_POLY1305) {
-        /*
-         * Technically the nonce length must be at least 8 bytes, but for
-         * AES-GCM, AES-CCM and Poly1305-ChaCha20 the nonce length is exact 12.
-         */
-        const guint nonce_len = 12;
-        DISSECTOR_ASSERT(decoder->write_iv.data_len == nonce_len);
-        memcpy(nonce, decoder->write_iv.data, decoder->write_iv.data_len);
-        /* Sequence number is left-padded with zeroes and XORed with write_iv */
-        phton64(nonce + nonce_len - 8, pntoh64(nonce + nonce_len - 8) ^ decoder->seq);
-        ssl_debug_printf("%s seq %" G_GUINT64_FORMAT "\n", G_STRFUNC, decoder->seq);
-    }
+        } else if (version == TLSV1DOT3_VERSION || cipher_mode == MODE_POLY1305) {
+            /*
+             * Technically the nonce length must be at least 8 bytes, but for
+             * AES-GCM, AES-CCM and Poly1305-ChaCha20 the nonce length is exact 12.
+             */
 
-    /* Set nonce and additional authentication data */
+            const guint nonce_len = 12;
+            guint64 seq = decoder->seq;
+            DISSECTOR_ASSERT(decoder->write_iv.data_len == nonce_len);
+            memcpy(nonce, decoder->write_iv.data, decoder->write_iv.data_len);
+
+            if (i > 0) {
+                *decoder->used_stream = *(TCPLSStreamCtx **) wmem_array_index(decoder->tcpls_streams, i - 1);
+                seq = decoder->is_tcpls_client ? (*decoder->used_stream)->client_seq : (*decoder->used_stream)->server_seq;
+            } else if (decoder->used_stream) {
+                *decoder->used_stream = NULL;
+            }
+            /* Sequence number is left-padded with zeroes and XORed with write_iv */
+            phton64(nonce + nonce_len - 8, pntoh64(nonce + nonce_len - 8) ^ seq);
+            if (decoder->used_stream && *decoder->used_stream) { // If TCPLS Stream is used
+                if ((*decoder->used_stream)->is_client) {
+                    phton32(nonce, (pntoh32(nonce) + (*decoder->used_stream)->iv_offset) % 0xffffffff);
+                } else {
+                    phton32(nonce, (pntoh32(nonce) - (*decoder->used_stream)->iv_offset) % 0xffffffff);
+                }
+            }
+            ssl_debug_printf("%s seq %" G_GUINT64_FORMAT "\n", G_STRFUNC, seq);
+        }
+
+            /* Set nonce and additional authentication data */
 #ifdef HAVE_LIBGCRYPT_AEAD
-    gcry_cipher_reset(decoder->evp);
-    ssl_print_data("nonce", nonce, 12);
-    err = gcry_cipher_setiv(decoder->evp, nonce, 12);
-    if (err) {
-        ssl_debug_printf("%s failed to set nonce: %s\n", G_STRFUNC, gcry_strerror(err));
-        return FALSE;
-    }
+        gcry_cipher_reset(decoder->evp);
+        ssl_print_data("nonce", nonce, 12);
+        err = gcry_cipher_setiv(decoder->evp, nonce, 12);
+        if (err) {
+            ssl_debug_printf("%s failed to set nonce: %s\n", G_STRFUNC, gcry_strerror(err));
+            return FALSE;
+        }
 
-    if (decoder->cipher_suite->mode == MODE_CCM || decoder->cipher_suite->mode == MODE_CCM_8) {
-        /* size of plaintext, additional authenticated data and auth tag. */
-        guint64 lengths[3] = { ciphertext_len, is_v12 ? 13 : 0, auth_tag_len };
-        if (is_cid) {
-            lengths[1] = 13 + 1 + cidl; /* cid length (1 byte) + cid (cidl bytes)*/
+        if (decoder->cipher_suite->mode == MODE_CCM || decoder->cipher_suite->mode == MODE_CCM_8) {
+            /* size of plaintext, additional authenticated data and auth tag. */
+            guint64 lengths[3] = {ciphertext_len, is_v12 ? 13 : 0, auth_tag_len};
+            if (is_cid) {
+                lengths[1] = 13 + 1 + cidl; /* cid length (1 byte) + cid (cidl bytes)*/
+            }
+            gcry_cipher_ctl(decoder->evp, GCRYCTL_SET_CCM_LENGTHS, lengths, sizeof(lengths));
         }
-        gcry_cipher_ctl(decoder->evp, GCRYCTL_SET_CCM_LENGTHS, lengths, sizeof(lengths));
-    }
 
-    /* (D)TLS 1.2 needs specific AAD, TLS 1.3 (before -25) uses empty AAD. */
-    if (is_cid) { /* if connection ID */
-        guchar aad[14+DTLS_MAX_CID_LENGTH];
-        guint aad_len = 14 + cidl;
-        phton64(aad, decoder->seq);         /* record sequence number */
-        phton16(aad, decoder->epoch);       /* DTLS 1.2 includes epoch. */
-        aad[8] = ct;                        /* TLSCompressed.type */
-        phton16(aad + 9, record_version);   /* TLSCompressed.version */
-        memcpy(aad + 11, cid, cidl);        /* cid */
-        aad[11 + cidl] = cidl;              /* cid_length */
-        phton16(aad + 12 + cidl, ciphertext_len);  /* TLSCompressed.length */
-        ssl_print_data("AAD", aad, aad_len);
-        err = gcry_cipher_authenticate(decoder->evp, aad, aad_len);
-        if (err) {
-            ssl_debug_printf("%s failed to set AAD: %s\n", G_STRFUNC, gcry_strerror(err));
-            return FALSE;
+        /* (D)TLS 1.2 needs specific AAD, TLS 1.3 (before -25) uses empty AAD. */
+        if (is_cid) { /* if connection ID */
+            guchar aad[14 + DTLS_MAX_CID_LENGTH];
+            guint aad_len = 14 + cidl;
+            phton64(aad, decoder->seq);         /* record sequence number */
+            phton16(aad, decoder->epoch);       /* DTLS 1.2 includes epoch. */
+            aad[8] = ct;                        /* TLSCompressed.type */
+            phton16(aad + 9, record_version);   /* TLSCompressed.version */
+            memcpy(aad + 11, cid, cidl);        /* cid */
+            aad[11 + cidl] = cidl;              /* cid_length */
+            phton16(aad + 12 + cidl, ciphertext_len);  /* TLSCompressed.length */
+            ssl_print_data("AAD", aad, aad_len);
+            err = gcry_cipher_authenticate(decoder->evp, aad, aad_len);
+            if (err) {
+                ssl_debug_printf("%s failed to set AAD: %s\n", G_STRFUNC, gcry_strerror(err));
+                return FALSE;
+            }
+        } else if (is_v12) {
+            guchar aad[13];
+            phton64(aad, decoder->seq);         /* record sequence number */
+            if (version == DTLSV1DOT2_VERSION) {
+                phton16(aad, decoder->epoch);   /* DTLS 1.2 includes epoch. */
+            }
+            aad[8] = ct;                        /* TLSCompressed.type */
+            phton16(aad + 9, record_version);   /* TLSCompressed.version */
+            phton16(aad + 11, ciphertext_len);  /* TLSCompressed.length */
+            ssl_print_data("AAD", aad, sizeof(aad));
+            err = gcry_cipher_authenticate(decoder->evp, aad, sizeof(aad));
+            if (err) {
+                ssl_debug_printf("%s failed to set AAD: %s\n", G_STRFUNC, gcry_strerror(err));
+                return FALSE;
+            }
+        } else if (draft_version >= 25 || draft_version == 0) {
+            guchar aad[5];
+            aad[0] = ct;                        /* TLSCiphertext.opaque_type (23) */
+            phton16(aad + 1, record_version);   /* TLSCiphertext.legacy_record_version (0x0303) */
+            phton16(aad + 3, inl);              /* TLSCiphertext.length */
+            ssl_print_data("AAD", aad, sizeof(aad));
+            err = gcry_cipher_authenticate(decoder->evp, aad, sizeof(aad));
+            if (err) {
+                ssl_debug_printf("%s failed to set AAD: %s\n", G_STRFUNC, gcry_strerror(err));
+                return FALSE;
+            }
         }
-    } else if (is_v12) {
-        guchar aad[13];
-        phton64(aad, decoder->seq);         /* record sequence number */
-        if (version == DTLSV1DOT2_VERSION) {
-            phton16(aad, decoder->epoch);   /* DTLS 1.2 includes epoch. */
-        }
-        aad[8] = ct;                        /* TLSCompressed.type */
-        phton16(aad + 9, record_version);   /* TLSCompressed.version */
-        phton16(aad + 11, ciphertext_len);  /* TLSCompressed.length */
-        ssl_print_data("AAD", aad, sizeof(aad));
-        err = gcry_cipher_authenticate(decoder->evp, aad, sizeof(aad));
-        if (err) {
-            ssl_debug_printf("%s failed to set AAD: %s\n", G_STRFUNC, gcry_strerror(err));
-            return FALSE;
-        }
-    } else if (draft_version >= 25 || draft_version == 0) {
-        guchar aad[5];
-        aad[0] = ct;                        /* TLSCiphertext.opaque_type (23) */
-        phton16(aad + 1, record_version);   /* TLSCiphertext.legacy_record_version (0x0303) */
-        phton16(aad + 3, inl);              /* TLSCiphertext.length */
-        ssl_print_data("AAD", aad, sizeof(aad));
-        err = gcry_cipher_authenticate(decoder->evp, aad, sizeof(aad));
-        if (err) {
-            ssl_debug_printf("%s failed to set AAD: %s\n", G_STRFUNC, gcry_strerror(err));
-            return FALSE;
-        }
-    }
 #else
-    err = gcry_cipher_setctr(decoder->evp, nonce_with_counter, 16);
-    if (err) {
-        ssl_debug_printf("%s failed: failed to set CTR: %s\n", G_STRFUNC, gcry_strerror(err));
-        return FALSE;
-    }
+        err = gcry_cipher_setctr(decoder->evp, nonce_with_counter, 16);
+        if (err) {
+            ssl_debug_printf("%s failed: failed to set CTR: %s\n", G_STRFUNC, gcry_strerror(err));
+            return FALSE;
+        }
 #endif
 
-    /* Decrypt now that nonce and AAD are set. */
-    err = gcry_cipher_decrypt(decoder->evp, out_str->data, out_str->data_len, ciphertext, ciphertext_len);
+        /* Decrypt now that nonce and AAD are set. */
+        err = gcry_cipher_decrypt(decoder->evp, out_str->data, out_str->data_len, ciphertext, ciphertext_len);
+        if (err) {
+            ssl_debug_printf("%s decrypt failed: %s\n", G_STRFUNC, gcry_strerror(err));
+            continue;
+        }
+        err = 0;
+    }
+
     if (err) {
-        ssl_debug_printf("%s decrypt failed: %s\n", G_STRFUNC, gcry_strerror(err));
         return FALSE;
     }
 
@@ -4771,7 +4798,16 @@ tls_decrypt_aead_record(SslDecryptSession *ssl, SslDecoder *decoder,
      * CLIENT_EARLY_TRAFFIC_SECRET keys are unavailable.
      */
     if (version == TLSV1DOT2_VERSION || version == TLSV1DOT3_VERSION) {
-        decoder->seq++;
+        if (decoder->used_stream && *decoder->used_stream) {
+            if (decoder->is_tcpls_client) {
+                (*decoder->used_stream)->client_seq++;
+            } else {
+                (*decoder->used_stream)->server_seq++;
+            }
+            ssl_debug_printf("decryption success with TCPLS streamid %u\n", (*decoder->used_stream)->streamid);
+        } else {
+            decoder->seq++;
+        }
     }
 
     ssl_print_data("Plaintext", out_str->data, ciphertext_len);
@@ -5795,6 +5831,9 @@ tls13_change_key(SslDecryptSession *ssl, ssl_master_key_map_t *mk_map,
          * Remember the application traffic secret to support Key Update. The
          * other secrets cannot be used for this purpose, so free them.
          */
+        if (!ssl->session.tcpls_streams) {
+            ssl->session.tcpls_streams = wmem_array_new(wmem_file_scope(), sizeof(ssl->session.tcpls_used_stream));
+        }
         SslDecoder *decoder = is_from_server ? ssl->server : ssl->client;
         StringInfo *app_secret = &decoder->app_traffic_secret;
         if (type == TLS_SECRET_APP) {
@@ -5802,6 +5841,9 @@ tls13_change_key(SslDecryptSession *ssl, ssl_master_key_map_t *mk_map,
                                                        app_secret->data,
                                                        secret->data_len);
             ssl_data_set(app_secret, secret->data, secret->data_len);
+            decoder->used_stream = &ssl->session.tcpls_used_stream;
+            decoder->tcpls_streams = ssl->session.tcpls_streams;
+            decoder->is_tcpls_client = !is_from_server;
         } else {
             wmem_free(wmem_file_scope(), app_secret->data);
             app_secret->data = NULL;
@@ -9289,22 +9331,26 @@ ssl_dissect_hnd_extension(ssl_common_dissect_t *hf, tvbuff_t *tvb, proto_tree *t
         ext_type = tvb_get_ntohs(tvb, offset);
         ext_len  = tvb_get_ntohs(tvb, offset + 2);
 
-        ext_tree = proto_tree_add_subtree_format(tree, tvb, offset, 4 + ext_len, hf->ett.hs_ext, NULL,
-                                  "Extension: %s (len=%u)", val_to_str(ext_type,
-                                            tls_hello_extension_types,
-                                            "Unknown type %u"), ext_len);
+        if (ext_type < 100 || ext_type > 120) {  // Dirty hack for TCPLS
 
-        proto_tree_add_uint(ext_tree, hf->hf.hs_ext_type,
-                            tvb, offset, 2, ext_type);
-        offset += 2;
+            ext_tree = proto_tree_add_subtree_format(tree, tvb, offset, 4 + ext_len, hf->ett.hs_ext, NULL,
+                                                     "Extension: %s (len=%u)", val_to_str(ext_type,
+                                                                                          tls_hello_extension_types,
+                                                                                          "Unknown type %u"), ext_len);
 
-        /* opaque extension_data<0..2^16-1> */
-        if (!ssl_add_vector(hf, tvb, pinfo, ext_tree, offset, offset_end, &ext_len,
-                            hf->hf.hs_ext_len, 0, G_MAXUINT16)) {
-            return offset_end;
+            proto_tree_add_uint(ext_tree, hf->hf.hs_ext_type,
+                                tvb, offset, 2, ext_type);
+
+            offset += 2;
+
+            /* opaque extension_data<0..2^16-1> */
+            if (!ssl_add_vector(hf, tvb, pinfo, ext_tree, offset, offset_end, &ext_len,
+                                hf->hf.hs_ext_len, 0, G_MAXUINT16)) {
+                return offset_end;
+            }
+            offset += 2;
+            next_offset = offset + ext_len;
         }
-        offset += 2;
-        next_offset = offset + ext_len;
 
         switch (ext_type) {
         case SSL_HND_HELLO_EXT_SERVER_NAME:
@@ -9463,9 +9509,39 @@ ssl_dissect_hnd_extension(ssl_common_dissect_t *hf, tvbuff_t *tvb, proto_tree *t
             offset = ssl_dissect_hnd_hello_ext_connection_id(hf, tvb, pinfo, ext_tree, offset, hnd_type, session, ssl);
             break;
         default:
+            {
+                ssl_debug_printf("extensions type switch fallback for type %d\n", ext_type);
+                ssl_debug_flush();
+                dissector_handle_t record_handle = dissector_get_uint_handle(tls_extensions_associations, ext_type);
+
+                if (record_handle && tvb) {
+                    tvbuff_t *ext_tvb = tvb_new_subset_length(tvb, offset, 4 + ext_len);
+                    call_dissector(record_handle, ext_tvb, pinfo, tree);
+                    offset += 4 + ext_len;
+                    next_offset = offset;
+                    break;
+                }
+            }
+            ext_tree = proto_tree_add_subtree_format(tree, tvb, offset, 4 + ext_len, hf->ett.hs_ext, NULL,
+                                                     "Extension: %s (len=%u)", val_to_str(ext_type,
+                                                                                          tls_hello_extension_types,
+                                                                                          "Unknown type %u"), ext_len);
+
+            proto_tree_add_uint(ext_tree, hf->hf.hs_ext_type,
+                                tvb, offset, 2, ext_type);
+
+            offset += 2;
+
+            /* opaque extension_data<0..2^16-1> */
+            if (!ssl_add_vector(hf, tvb, pinfo, ext_tree, offset, offset_end, &ext_len,
+                                hf->hf.hs_ext_len, 0, G_MAXUINT16)) {
+                return offset_end;
+            }
+            offset += 2;
             proto_tree_add_item(ext_tree, hf->hf.hs_ext_data,
                                         tvb, offset, ext_len, ENC_NA);
             offset += ext_len;
+            next_offset = offset;
             break;
         }
 
@@ -10100,6 +10176,10 @@ ssl_common_register_ssl_alpn_dissector_table(const char *name,
     ssl_alpn_dissector_table = register_dissector_table(name, ui_name,
         proto, FT_STRING, FALSE);
     register_dissector_table_alias(ssl_alpn_dissector_table, "ssl.handshake.extensions_alpn_str");
+}
+
+void ssl_common_register_extensions_dissector_table(const char *name, const char *ui_name, const int proto) {
+    tls_extensions_associations = register_dissector_table(name, ui_name, proto, FT_UINT16, FALSE);
 }
 
 void
