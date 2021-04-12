@@ -357,7 +357,11 @@ Dot11DecryptRc4KeyData(const guint8 *decryption_key, guint decryption_key_len,
         gcry_cipher_close(rc4_handle);
         return NULL;
     }
+#ifndef __APPLE__
     decrypted_key = (guint8 *)g_memdup(encrypted_keydata, encrypted_keydata_len);
+#else
+    decrypted_key = (guint8 *)g_memdup2(encrypted_keydata, encrypted_keydata_len);
+#endif
     if (!decrypted_key) {
         gcry_cipher_close(rc4_handle);
         return NULL;
@@ -563,7 +567,11 @@ Dot11DecryptAddSa(
     if (existing_sa != NULL) {
         sa = Dot11DecryptPrependSa(existing_sa, sa);
     } else {
+#ifndef __APPLE__
         void *key = g_memdup(id, sizeof(DOT11DECRYPT_SEC_ASSOCIATION_ID));
+#else
+        void *key = g_memdup2(id, sizeof(DOT11DECRYPT_SEC_ASSOCIATION_ID));
+#endif
         g_hash_table_insert(ctx->sa_hash, key, sa);
     }
     return sa;
