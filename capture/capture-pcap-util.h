@@ -11,16 +11,19 @@
 #ifndef __CAPTURE_PCAP_UTIL_H__
 #define __CAPTURE_PCAP_UTIL_H__
 
-#ifdef __cplusplus
-extern "C" {
-#endif /* __cplusplus */
-
 #ifdef HAVE_LIBPCAP
 
 #include "wspcap.h"
 
 #include "capture_opts.h"
 
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
+
+#ifdef HAVE_LIBPCAP
 /*
  * A snapshot length of 0 is useless - and libpcap/WinPcap/Npcap don't guarantee
  * that a snapshot length of 0 will work, and, on some platforms, it won't

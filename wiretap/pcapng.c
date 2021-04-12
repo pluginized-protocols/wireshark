@@ -23,6 +23,7 @@
 
 #include <wsutil/ws_printf.h>
 #include <wsutil/strtoi.h>
+#include <wsutil/glib-compat.h>
 
 #include "wtap-int.h"
 #include "file_wrappers.h"
@@ -808,7 +809,23 @@ pcapng_read_section_header_block(FILE_T fh, pcapng_block_header_t *bh,
         }
         to_read -= bytes_read;
 
-        /* handle option content */
+        /*
+         * Handle option content.
+         *
+         * ***DO NOT*** add any items to this table that are not
+         * standardized option codes in either section 3.5 "Options"
+         * of the current pcapng spec, at
+         *
+         *    https://pcapng.github.io/pcapng/draft-tuexen-opsawg-pcapng.html#name-options
+         *
+         * or in the list of options in section 4.1 "Section Header Block"
+         * of the current pcapng spec, at
+         *
+         *    https://pcapng.github.io/pcapng/draft-tuexen-opsawg-pcapng.html#name-section-header-block
+         *
+         * All option codes in this switch statement here must be listed
+         * in one of those places as standardized option types.
+         */
         switch (oh.option_code) {
             case(OPT_EOFOPT):
                 if (to_read != 0) {
@@ -934,7 +951,23 @@ pcapng_read_if_descr_block(wtap *wth, FILE_T fh, pcapng_block_header_t *bh,
         }
         to_read -= bytes_read;
 
-        /* handle option content */
+        /*
+         * Handle option content.
+         *
+         * ***DO NOT*** add any items to this table that are not
+         * standardized option codes in either section 3.5 "Options"
+         * of the current pcapng spec, at
+         *
+         *    https://pcapng.github.io/pcapng/draft-tuexen-opsawg-pcapng.html#name-options
+         *
+         * or in the list of options in section 4.2 "Interface Description
+         * Block" of the current pcapng spec, at
+         *
+         *    https://pcapng.github.io/pcapng/draft-tuexen-opsawg-pcapng.html#name-interface-description-block
+         *
+         * All option codes in this switch statement here must be listed
+         * in one of those places as standardized option types.
+         */
         switch (oh.option_code) {
             case(OPT_EOFOPT): /* opt_endofopt */
                 if (to_read != 0) {
@@ -1482,7 +1515,23 @@ pcapng_read_packet_block(FILE_T fh, pcapng_block_header_t *bh,
         }
         to_read -= bytes_read;
 
-        /* handle option content */
+        /*
+         * Handle option content.
+         *
+         * ***DO NOT*** add any items to this table that are not
+         * standardized option codes in either section 3.5 "Options"
+         * of the current pcapng spec, at
+         *
+         *    https://pcapng.github.io/pcapng/draft-tuexen-opsawg-pcapng.html#name-options
+         *
+         * or in the list of options in section 4.3 "Enhanced Packet Block"
+         * of the current pcapng spec, at
+         *
+         *    https://pcapng.github.io/pcapng/draft-tuexen-opsawg-pcapng.html#name-enhanced-packet-block
+         *
+         * All option codes in this switch statement here must be listed
+         * in one of those places as standardized option types.
+         */
         switch (oh->option_code) {
             case(OPT_EOFOPT):
                 if (to_read != 0) {
@@ -1614,7 +1663,7 @@ pcapng_read_packet_block(FILE_T fh, pcapng_block_header_t *bh,
                     wblock->rec->packet_verdict = g_ptr_array_new_with_free_func((GDestroyNotify) g_bytes_unref);
                 }
 
-                option_content_copy = g_memdup(option_content, oh->option_length);
+                option_content_copy = g_memdup2(option_content, oh->option_length);
 
                 /* For Linux XDP and TC we might need to byte swap */
                 if (section_info->byte_swapped &&
@@ -2111,7 +2160,23 @@ read_options:
         }
         to_read -= bytes_read;
 
-        /* handle option content */
+        /*
+         * Handle option content.
+         *
+         * ***DO NOT*** add any items to this table that are not
+         * standardized option codes in either section 3.5 "Options"
+         * of the current pcapng spec, at
+         *
+         *    https://pcapng.github.io/pcapng/draft-tuexen-opsawg-pcapng.html#name-options
+         *
+         * or in the list of options in section 4.5 "Name Resolution Block"
+         * of the current pcapng spec, at
+         *
+         *    https://pcapng.github.io/pcapng/draft-tuexen-opsawg-pcapng.html#name-name-resolution-block
+         *
+         * All option codes in this switch statement here must be listed
+         * in one of those places as standardized option types.
+         */
         switch (oh.option_code) {
             case(OPT_EOFOPT):
                 if (to_read != 0) {
@@ -2208,7 +2273,23 @@ pcapng_read_interface_statistics_block(FILE_T fh, pcapng_block_header_t *bh,
         }
         to_read -= bytes_read;
 
-        /* handle option content */
+        /*
+         * Handle option content.
+         *
+         * ***DO NOT*** add any items to this table that are not
+         * standardized option codes in either section 3.5 "Options"
+         * of the current pcapng spec, at
+         *
+         *    https://pcapng.github.io/pcapng/draft-tuexen-opsawg-pcapng.html#name-options
+         *
+         * or in the list of options in section 4.6 "Interface Statistics
+         * Block" of the current pcapng spec, at
+         *
+         *    https://pcapng.github.io/pcapng/draft-tuexen-opsawg-pcapng.html#name-interface-statistics-block
+         *
+         * All option codes in this switch statement here must be listed
+         * in one of those places as standardized option types.
+         */
         switch (oh.option_code) {
             case(OPT_EOFOPT): /* opt_endofopt */
                 if (to_read != 0) {
@@ -2635,6 +2716,16 @@ pcapng_read_block(wtap *wth, FILE_T fh, pcapng_t *pn,
             return FALSE;
         }
 
+        /*
+         * ***DO NOT*** add any items to this table that are not
+         * standardized block types in the current pcapng spec at
+         *
+         *    https://pcapng.github.io/pcapng/draft-tuexen-opsawg-pcapng.html
+         *
+         * All block types in this switch statement here must be
+         * listed there as standardized block types, ideally with
+         * a description.
+         */
         switch (bh.block_type) {
             case(BLOCK_TYPE_IDB):
                 if (!pcapng_read_if_descr_block(wth, fh, &bh, section_info, wblock, err, err_info))
@@ -2745,16 +2836,6 @@ pcapng_open(wtap *wth, int *err, gchar **err_info)
     gint64 saved_offset;
     section_info_t first_section, new_section, *current_section;
 
-    /* we don't know the byte swapping of the file yet */
-    first_section.byte_swapped = FALSE;
-    first_section.version_major = -1;
-    first_section.version_minor = -1;
-    first_section.shb_off = 0; /* it's at the very beginning of the file */
-
-    /* we don't expect any packet blocks yet */
-    wblock.frame_buffer = NULL;
-    wblock.rec = NULL;
-
     pcapng_debug("pcapng_open: opening file");
     /*
      * Read first block.
@@ -2802,6 +2883,10 @@ pcapng_open(wtap *wth, int *err, gchar **err_info)
      */
     wblock.type = bh.block_type;
     wblock.block = NULL;
+    /* we don't expect any packet blocks yet */
+    wblock.frame_buffer = NULL;
+    wblock.rec = NULL;
+
     switch (pcapng_read_section_header_block(wth->fh, &bh, &first_section,
                                              &wblock, err, err_info)) {
     case PCAPNG_BLOCK_OK:
@@ -2867,6 +2952,11 @@ pcapng_open(wtap *wth, int *err, gchar **err_info)
      * Create the array of interfaces for the first section.
      */
     first_section.interfaces = g_array_new(FALSE, FALSE, sizeof(interface_info_t));
+
+    /*
+     * The first section is at the very beginning of the file.
+     */
+    first_section.shb_off = 0;
 
     /*
      * Allocate the sections table with space reserved for the first
@@ -3582,6 +3672,17 @@ pcapng_write_enhanced_packet_block(wtap_dumper *wdh, const wtap_rec *rec,
     int_data = g_array_index(wdh->interface_data, wtap_block_t,
                              epb.interface_id);
     int_data_mand = (wtapng_if_descr_mandatory_t*)wtap_block_get_mandatory_data(int_data);
+    if (int_data_mand->wtap_encap != rec->rec_header.packet_header.pkt_encap) {
+        /*
+         * Our caller is doing something bad.
+         */
+        *err = WTAP_ERR_INTERNAL;
+        *err_info = g_strdup_printf("pcapng: interface %u encap %d != packet encap %d",
+                                    epb.interface_id,
+                                    int_data_mand->wtap_encap,
+                                    rec->rec_header.packet_header.pkt_encap);
+        return FALSE;
+    }
     ts = ((guint64)rec->ts.secs) * int_data_mand->time_units_per_second +
         (((guint64)rec->ts.nsecs) * int_data_mand->time_units_per_second) / 1000000000;
     epb.timestamp_high      = (guint32)(ts >> 32);

@@ -24,6 +24,9 @@ endif()
 if(POLICY CMP0069)
 	cmake_policy(SET CMP0069 NEW)
 endif()
+if(POLICY CMP0071)
+	cmake_policy(SET CMP0071 NEW)
+endif()
 if(POLICY CMP0074)
 	cmake_policy(SET CMP0074 NEW)
 endif()
@@ -268,6 +271,38 @@ if(WIN32)
     # command-line arguments.
     set(WILDCARD_OBJ wsetargv.obj)
 endif(WIN32)
+
+include(CheckSymbolExists)
+
+#
+# Large file support on UN*X, a/k/a LFS.
+#
+# On Windows, we require _fseeki64() and _ftelli64().  Visual
+# Studio has had supported them since Visual Studio 2005/MSVCR80,
+# and we require newer versions, so we know we have them.
+#
+if(NOT WIN32)
+	include(FindLFS)
+	if(LFS_FOUND)
+		#
+		# Add the required #defines.
+		#
+		add_definitions(${LFS_DEFINITIONS})
+	endif()
+
+	#
+	# Check for fseeko as well.
+	#
+	include(FindFseeko)
+	if(FSEEKO_FOUND)
+		set(HAVE_FSEEKO ON)
+
+		#
+		# Add the required #defines.
+		#
+		add_definitions(${FSEEKO_DEFINITIONS})
+	endif()
+endif()
 
 # Banner shown at top right of Qt welcome screen.
 if(DEFINED ENV{WIRESHARK_VERSION_FLAVOR})
@@ -642,6 +677,15 @@ else() # ! MSVC
 		# -Wimplicit-function-declaration into an error by default.
 		#
 		-Werror=implicit
+		#
+		# the value used for uninitialized fields is 0 and cannot be changed
+		# the workaround is to initialize everything to the wanted default
+		# any subsequent initializers then cause this warning
+		#
+		# XXX: in theory c++20+ could have this issue aswell, but we don't
+		# use designated initializers in c++ code anyway.
+		#
+		-Wno-override-init
 	)
 
 	#
@@ -1091,6 +1135,10 @@ ws_find_package(Systemd BUILD_sdjournal HAVE_SYSTEMD)
 
 # Build the Qt GUI?
 if(BUILD_wireshark)
+	set(CMAKE_AUTOMOC ON)
+	set(CMAKE_AUTOUIC ON)
+	set(CMAKE_AUTORCC ON)
+
 	# Untested, may not work if CMAKE_PREFIX_PATH gets overwritten
 	# somewhere. The if WIN32 in this place is annoying as well.
 	if(WIN32)
@@ -1246,7 +1294,6 @@ if(GNUTLS_FOUND AND NOT GNUTLS_VERSION VERSION_LESS "3.4.0")
 	#
 	# Check that the support is present in case GnuTLS was compiled
 	# --without-p11-kit as macos-setup.sh did until December 2020.
-	include(CheckSymbolExists)
 	cmake_push_check_state()
 	if(WIN32)
 		set(CMAKE_REQUIRED_DEFINITIONS -Dssize_t=int)
@@ -1419,8 +1466,7 @@ endif()
 set(PLUGIN_INSTALL_VERSION_LIBDIR "${PLUGIN_INSTALL_LIBDIR}/${PLUGIN_PATH_ID}")
 set(PLUGIN_VERSION_DIR "plugins/${PLUGIN_PATH_ID}")
 
-add_subdirectory( capchild )
-add_subdirectory( caputils )
+add_subdirectory( capture )
 add_subdirectory( doc )
 add_subdirectory( docbook EXCLUDE_FROM_ALL )
 add_subdirectory( epan )
@@ -1545,10 +1591,6 @@ set (PLUGIN_DIR ${_plugin_dir} CACHE INTERNAL "Build time plugin location.")
 foreach(_plugin_src_dir ${PLUGIN_SRC_DIRS})
 	add_subdirectory( ${_plugin_src_dir} )
 endforeach()
-
-# Large file support (e.g. make off_t 64 bit if supported)
-include(gmxTestLargeFiles)
-gmx_test_large_files(GMX_LARGEFILES)
 
 set( VERSION ${PROJECT_VERSION} )
 if(VCSVERSION_OVERRIDE)

@@ -245,8 +245,6 @@ RtpAnalysisDialog::RtpAnalysisDialog(QWidget &parent, CaptureFile &cf, rtpstream
 
     ui->progressFrame->hide();
 
-    player_button_ = RtpPlayerDialog::addPlayerButton(ui->buttonBox);
-
     stream_ctx_menu_.addAction(ui->actionGoToPacket);
     stream_ctx_menu_.addAction(ui->actionNextProblem);
     stream_ctx_menu_.addSeparator();
@@ -330,8 +328,12 @@ RtpAnalysisDialog::RtpAnalysisDialog(QWidget &parent, CaptureFile &cf, rtpstream
         ui->actionSaveReverseAudioSyncFile->setEnabled(false);
     }
 
-    QPushButton *save_bt = ui->buttonBox->button(QDialogButtonBox::Save);
-    QMenu *save_menu = new QMenu(save_bt);
+    player_button_ = RtpPlayerDialog::addPlayerButton(ui->buttonBox, this);
+
+    QPushButton *export_btn = ui->buttonBox->addButton(ui->actionExportButton->text(), QDialogButtonBox::ActionRole);
+    export_btn->setToolTip(ui->actionExportButton->toolTip());
+
+    QMenu *save_menu = new QMenu(export_btn);
     save_menu->addAction(ui->actionSaveAudioUnsync);
     save_menu->addAction(ui->actionSaveForwardAudioUnsync);
     save_menu->addAction(ui->actionSaveReverseAudioUnsync);
@@ -349,7 +351,7 @@ RtpAnalysisDialog::RtpAnalysisDialog(QWidget &parent, CaptureFile &cf, rtpstream
     save_menu->addAction(ui->actionSaveReverseCsv);
     save_menu->addSeparator();
     save_menu->addAction(ui->actionSaveGraph);
-    save_bt->setMenu(save_menu);
+    export_btn->setMenu(save_menu);
 
     if (stream_fwd) { // XXX What if stream_fwd == 0 && stream_rev != 0?
         rtpstream_info_copy_deep(&fwd_statinfo_, stream_fwd);
@@ -440,9 +442,6 @@ void RtpAnalysisDialog::updateWidgets()
 
 #if defined(QT_MULTIMEDIA_LIB)
     player_button_->setEnabled(num_streams_ > 0 && !file_closed_);
-#else
-    player_button_->setEnabled(false);
-    player_button_->setText(tr("No Audio"));
 #endif
 
     ui->tabWidget->setEnabled(enable_tab);
@@ -631,13 +630,6 @@ void RtpAnalysisDialog::on_actionSaveGraph_triggered()
             path = QDir(file_name);
             wsApp->setLastOpenDir(path.canonicalPath().toUtf8().constData());
         }
-    }
-}
-
-void RtpAnalysisDialog::on_buttonBox_clicked(QAbstractButton *button)
-{
-    if (button == player_button_) {
-        showPlayer();
     }
 }
 
@@ -957,45 +949,40 @@ void RtpAnalysisDialog::updateGraph()
     ui->streamGraph->replot();
 }
 
-void RtpAnalysisDialog::showPlayer()
+QVector<rtpstream_info_t *>RtpAnalysisDialog::getSelectedRtpStreams()
 {
-#ifdef QT_MULTIMEDIA_LIB
-    if (num_streams_ < 1) return;
+    QVector<rtpstream_info_t *> stream_infos;
 
-    RtpPlayerDialog *rtp_player_dialog = new RtpPlayerDialog(*this, cap_file_);
-    rtpstream_info_t stream_info;
+    if (num_streams_ > 0) {
+        stream_infos << &fwd_statinfo_;
 
-    // XXX We might want to create an "rtp_stream_id_t" struct with only
-    // addresses, ports & SSRC.
-    rtpstream_info_init(&stream_info);
-    rtpstream_id_copy(&fwd_statinfo_.id, &stream_info.id);
-    stream_info.packet_count = fwd_statinfo_.packet_count;
-    stream_info.setup_frame_number = fwd_statinfo_.setup_frame_number;
-    stream_info.rtp_stats = fwd_statinfo_.rtp_stats;
-    nstime_copy(&stream_info.start_rel_time, &fwd_statinfo_.start_rel_time);
-    nstime_copy(&stream_info.stop_rel_time, &fwd_statinfo_.stop_rel_time);
-    nstime_copy(&stream_info.start_abs_time, &fwd_statinfo_.start_abs_time);
-    rtp_player_dialog->addRtpStream(&stream_info);
-
-    if (num_streams_ > 1) {
-        rtpstream_info_init(&stream_info);
-        rtpstream_id_copy(&rev_statinfo_.id, &stream_info.id);
-        stream_info.packet_count = rev_statinfo_.packet_count;
-        stream_info.setup_frame_number = rev_statinfo_.setup_frame_number;
-        stream_info.rtp_stats = rev_statinfo_.rtp_stats;
-        nstime_copy(&stream_info.start_rel_time, &rev_statinfo_.start_rel_time);
-        nstime_copy(&stream_info.stop_rel_time, &rev_statinfo_.stop_rel_time);
-        nstime_copy(&stream_info.start_abs_time, &rev_statinfo_.start_abs_time);
-        rtp_player_dialog->addRtpStream(&stream_info);
+        if (num_streams_ > 1) {
+            stream_infos << &rev_statinfo_;
+        }
     }
 
-    connect(rtp_player_dialog, SIGNAL(goToPacket(int)), this, SIGNAL(goToPacket(int)));
+    return stream_infos;
+}
 
-    rtp_player_dialog->setWindowModality(Qt::ApplicationModal);
-    rtp_player_dialog->setAttribute(Qt::WA_DeleteOnClose);
-    rtp_player_dialog->setMarkers();
-    rtp_player_dialog->show();
-#endif // QT_MULTIMEDIA_LIB
+void RtpAnalysisDialog::rtpPlayerReplace()
+{
+    if (num_streams_ < 1) return;
+
+    emit rtpPlayerDialogReplaceRtpStreams(getSelectedRtpStreams());
+}
+
+void RtpAnalysisDialog::rtpPlayerAdd()
+{
+    if (num_streams_ < 1) return;
+
+    emit rtpPlayerDialogAddRtpStreams(getSelectedRtpStreams());
+}
+
+void RtpAnalysisDialog::rtpPlayerRemove()
+{
+    if (num_streams_ < 1) return;
+
+    emit rtpPlayerDialogRemoveRtpStreams(getSelectedRtpStreams());
 }
 
 /* Convert one packet payload to samples in row */

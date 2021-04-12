@@ -323,11 +323,19 @@
       <enum>Qt::Horizontal</enum>
      </property>
      <property name="standardButtons">
-      <set>QDialogButtonBox::Close|QDialogButtonBox::Help|QDialogButtonBox::Save</set>
+      <set>QDialogButtonBox::Close|QDialogButtonBox::Help</set>
      </property>
     </widget>
    </item>
   </layout>
+  <action name="actionExportButton">
+   <property name="text">
+    <string>&amp;Export</string>
+   </property>
+   <property name="toolTip">
+    <string>Open export menu</string>
+   </property>
+  </action>
   <action name="actionSaveAudioUnsync">
    <property name="text">
     <string>Unsynchronized Forward and Reverse Audio</string>

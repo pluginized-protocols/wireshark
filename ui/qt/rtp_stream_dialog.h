@@ -37,11 +37,17 @@ signals:
     void packetsMarked();
     void updateFilter(QString filter, bool force = false);
     void goToPacket(int packet_num);
+    void rtpPlayerDialogReplaceRtpStreams(QVector<rtpstream_info_t *> stream_infos);
+    void rtpPlayerDialogAddRtpStreams(QVector<rtpstream_info_t *> stream_infos);
+    void rtpPlayerDialogRemoveRtpStreams(QVector<rtpstream_info_t *> stream_infos);
 
 public slots:
     void selectRtpStream(rtpstream_id_t *id);
     void deselectRtpStream(rtpstream_id_t *id);
     void displayFilterSuccess(bool success);
+    void rtpPlayerReplace();
+    void rtpPlayerAdd();
+    void rtpPlayerRemove();
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event);
@@ -73,7 +79,8 @@ private:
 
     QList<QVariant> streamRowData(int row) const;
     void freeLastSelected();
-
+    void invertSelection();
+    QVector<rtpstream_info_t *>getSelectedRtpStreams();
 
 private slots:
     void showStreamMenu(QPoint pos);
@@ -83,7 +90,6 @@ private slots:
     void on_actionGoToSetup_triggered();
     void on_actionMarkPackets_triggered();
     void on_actionPrepareFilter_triggered();
-    void on_actionSelectNone_triggered();
     void on_streamTreeWidget_itemSelectionChanged();
     void on_buttonBox_helpRequested();
     void on_buttonBox_clicked(QAbstractButton *button);
@@ -92,6 +98,9 @@ private slots:
     void captureEvent(CaptureEvent e);
     void on_displayFilterCheckBox_toggled(bool checked);
     void on_todCheckBox_toggled(bool checked);
+    void on_actionSelectAll_triggered();
+    void on_actionSelectInvert_triggered();
+    void on_actionSelectNone_triggered();
 };
 
 #endif // RTP_STREAM_DIALOG_H

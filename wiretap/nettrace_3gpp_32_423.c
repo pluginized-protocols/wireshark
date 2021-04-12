@@ -23,7 +23,6 @@
 
 #include "wtap-int.h"
 #include "file_wrappers.h"
-#include "pcap-encap.h"
 
 #include <epan/exported_pdu.h>
 #include <wsutil/buffer.h>
@@ -33,7 +32,6 @@
 #include <wsutil/inet_addr.h>
 
 
-#include "pcapng.h"
 #include "nettrace_3gpp_32_423.h"
 
 /* String constants sought in the XML data.

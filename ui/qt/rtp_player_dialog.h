@@ -52,7 +52,7 @@ public:
      * @return The new "Play call" button.
      */
     // XXX We might want to move this to qt_ui_utils.
-    static QPushButton *addPlayerButton(QDialogButtonBox *button_box);
+    static QPushButton *addPlayerButton(QDialogButtonBox *button_box, QDialog *dialog);
 
 #ifdef QT_MULTIMEDIA_LIB
     ~RtpPlayerDialog();
@@ -60,17 +60,19 @@ public:
     void accept();
     void reject();
 
-    /** Add an RTP stream to play.
-     * MUST be called before show().
-     * Requires src_addr, src_port, dest_addr, dest_port, ssrc, packet_count,
-     * setup_frame_number, and start_rel_time.
-     *
-     * @param rtpstream struct with rtpstream info
-     */
-    void addRtpStream(rtpstream_info_t *rtpstream);
     void setMarkers();
 
 public slots:
+    /** Replace/Add/Remove an RTP streams to play.
+     * Requires array of rtpstream_info_t.
+     * Each item must have filled items: src_addr, src_port, dest_addr,
+     *  dest_port, ssrc, packet_count, setup_frame_number, and start_rel_time.
+     *
+     * @param rtpstream struct with rtpstream info
+     */
+    void replaceRtpStreams(QVector<rtpstream_info_t *> stream_infos);
+    void addRtpStreams(QVector<rtpstream_info_t *> stream_infos);
+    void removeRtpStreams(QVector<rtpstream_info_t *> stream_infos);
 
 signals:
     void goToPacket(int packet_num);
@@ -81,7 +83,7 @@ protected:
     bool eventFilter(QObject *obj, QEvent *event);
 
 private slots:
-    /** Retap the capture file, adding RTP packets that match the
+    /** Retap the capture file, reading RTP packets that match the
      * streams added using ::addRtpStream.
      */
     void retapPackets();
@@ -97,6 +99,7 @@ private slots:
     void plotClicked(QCPAbstractPlottable *plottable, int dataIndex, QMouseEvent *event);
     void updateHintLabel();
     void resetXAxis();
+    void updateGraphs();
     void playFinished(RtpAudioStream *stream);
 
     void setPlayPosition(double secs);
@@ -122,10 +125,13 @@ private slots:
     void on_actionAudioRoutingL_triggered();
     void on_actionAudioRoutingLR_triggered();
     void on_actionAudioRoutingR_triggered();
-    void on_actionAudioRoutingI_triggered();
+    void on_actionAudioRoutingMute_triggered();
+    void on_actionAudioRoutingUnmute_triggered();
+    void on_actionAudioRoutingMuteInvert_triggered();
     void on_streamTreeWidget_itemSelectionChanged();
     void on_streamTreeWidget_itemDoubleClicked(QTreeWidgetItem *item, const int column);
     void on_outputDeviceComboBox_currentIndexChanged(const QString &);
+    void on_outputAudioRate_currentIndexChanged(const QString &);
     void on_jitterSpinBox_valueChanged(double);
     void on_timingComboBox_currentIndexChanged(int);
     void on_todCheckBox_toggled(bool checked);
@@ -134,6 +140,8 @@ private slots:
     void on_actionSelectInvert_triggered();
     void on_actionSelectNone_triggered();
     void outputNotify();
+    void on_actionPlay_triggered();
+    void on_actionStop_triggered();
 
 private:
     Ui::RtpPlayerDialog *ui;
@@ -185,6 +193,9 @@ private:
     void highlightItem(QTreeWidgetItem *ti, bool highlight);
     void invertSelection();
     void handleGoToSetupPacket(QTreeWidgetItem *ti);
+    void addSingleRtpStream(rtpstream_info_t *rtpstream);
+    void removeRow(QTreeWidgetItem *ti);
+    void fillAudioRateMenu();
 
 #else // QT_MULTIMEDIA_LIB
 private:

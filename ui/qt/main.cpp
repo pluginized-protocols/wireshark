@@ -101,19 +101,19 @@
 #include <ui/qt/widgets/splash_overlay.h>
 #include "ui/qt/wireshark_application.h"
 
-#include "caputils/capture-pcap-util.h"
+#include "capture/capture-pcap-util.h"
 
 #include <QMessageBox>
 #include <QScreen>
 
 #ifdef _WIN32
-#  include "caputils/capture-wpcap.h"
+#  include "capture/capture-wpcap.h"
 #  include <wsutil/file_util.h>
 #endif /* _WIN32 */
 
 #ifdef HAVE_AIRPCAP
-#  include <caputils/airpcap.h>
-#  include <caputils/airpcap_loader.h>
+#  include <capture/airpcap.h>
+#  include <capture/airpcap_loader.h>
 //#  include "airpcap_dlg.h"
 //#  include "airpcap_gui_utils.h"
 #endif
@@ -172,7 +172,43 @@ void exit_application(int status) {
 
 /*
  * Report an error in command-line arguments.
- * Creates a console on Windows.
+ *
+ * On Windows, Wireshark is built for the Windows subsystem, and runs
+ * without a console, so we create a console on Windows to receive the
+ * output.
+ *
+ * See create_console(), in ui/win32/console_win32.c, for an example
+ * of code to check whether we need to create a console.
+ *
+ * On UN*Xes:
+ *
+ *  If Wireshark is run from the command line, its output either goes
+ *  to the terminal or to wherever the standard error was redirected.
+ *
+ *  If Wireshark is run by executing it as a remote command, e.g. with
+ *  ssh, its output either goes to whatever socket was set up for the
+ *  remote command's standard error or to wherever the standard error
+ *  was redirected.
+ *
+ *  If Wireshark was run from the GUI, e.g. by double-clicking on its
+ *  icon or on a file that it opens, there are no guarantees as to
+ *  where the standard error went.  It could be going to /dev/null
+ *  (current macOS), or to a socket to systemd for the journal, or
+ *  to a log file in the user's home directory, or to the "console
+ *  device" ("workstation console"), or....
+ *
+ *  Part of determining that, at least for locally-run Wireshark,
+ *  is to try to open /dev/tty to determine whether the process
+ *  has a controlling terminal.  (It fails, at a minimum, for
+ *  Wireshark launched from the GUI under macOS, Ubuntu with GNOME,
+ *  and Ubuntu with KDE; in all cases, an attempt to open /dev/tty
+ *  fails with ENXIO.)  If it does have a controlling terminal,
+ *  write to the standard error, otherwise assume that the standard
+ *  error might not go anywhere that the user will be able to see.
+ *  That doesn't handle the "run by ssh" case, however; that will
+ *  not have a controlling terminal.  (This means running it by
+ *  remote execution, not by remote login.)  Perhaps there's an
+ *  environment variable to check there.
  */
 // xxx copied from ../gtk/main.c
 static void
@@ -189,8 +225,6 @@ wireshark_cmdarg_err(const char *fmt, va_list ap)
 /*
  * Report additional information for an error in command-line arguments.
  * Creates a console on Windows.
- * XXX - pop this up in a window of some sort on UNIX+X11 if the controlling
- * terminal isn't the standard error?
  */
 // xxx copied from ../gtk/main.c
 static void
@@ -465,6 +499,18 @@ int main(int argc, char *qt_argv[])
 #endif
     /* Start time in microseconds */
     guint64 start_time = g_get_monotonic_time();
+    static const struct report_message_routines wireshark_report_routines = {
+        vfailure_alert_box,
+        vwarning_alert_box,
+        open_failure_alert_box,
+        read_failure_alert_box,
+        write_failure_alert_box,
+        cfile_open_failure_alert_box,
+        cfile_dump_open_failure_alert_box,
+        cfile_read_failure_alert_box,
+        cfile_write_failure_alert_box,
+        cfile_close_failure_alert_box
+    };
 
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
     /*
@@ -728,9 +774,7 @@ int main(int argc, char *qt_argv[])
     capture_opts_init(&global_capture_opts);
 #endif
 
-    init_report_message(vfailure_alert_box, vwarning_alert_box,
-                        open_failure_alert_box, read_failure_alert_box,
-                        write_failure_alert_box);
+    init_report_message("Wireshark", &wireshark_report_routines);
 
     /*
      * Libwiretap must be initialized before libwireshark is, so that

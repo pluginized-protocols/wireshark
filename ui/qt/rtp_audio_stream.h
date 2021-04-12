@@ -19,6 +19,7 @@
 #include <epan/address.h>
 #include <ui/rtp_stream.h>
 #include <ui/qt/utils/rtp_audio_routing.h>
+#include <ui/rtp_media.h>
 
 #include <QAudio>
 #include <QColor>
@@ -36,6 +37,12 @@ class QTemporaryFile;
 struct _rtp_info;
 struct _rtp_sample;
 
+// Structure used for storing frame num during visual waveform decoding
+typedef struct {
+    qint64  len;
+    guint32 frame_num;
+} rtp_frame_info;
+
 class RtpAudioStream : public QObject
 {
     Q_OBJECT
@@ -46,8 +53,8 @@ public:
     ~RtpAudioStream();
     bool isMatch(const rtpstream_info_t *rtpstream) const;
     bool isMatch(const struct _packet_info *pinfo, const struct _rtp_info *rtp_info) const;
-    //void addRtpStream(const rtpstream_info_t *rtpstream);
     void addRtpPacket(const struct _packet_info *pinfo, const struct _rtp_info *rtp_info);
+    void clearPackets();
     void reset(double global_start_time);
     AudioRouting getAudioRouting();
     void setAudioRouting(AudioRouting audio_routing);
@@ -55,7 +62,9 @@ public:
 
     double startRelTime() const { return start_rel_time_; }
     double stopRelTime() const { return stop_rel_time_; }
-    unsigned sampleRate() const { return audio_out_rate_; }
+    unsigned sampleRate() const { return first_sample_rate_; }
+    unsigned playRate() const { return audio_out_rate_; }
+    void setRequestedPlayRate(unsigned new_rate) { audio_requested_out_rate_ = new_rate; }
     const QStringList payloadNames() const;
 
     /**
@@ -138,6 +147,8 @@ public:
     void pausePlaying();
     void stopPlaying();
     void setStereoRequired(bool stereo_required) { stereo_required_ = stereo_required; }
+    qint16 getMaxSampleValue() { return max_sample_val_; }
+    void setMaxSampleValue(gint16 max_sample_val) { max_sample_val_used_ = max_sample_val; }
 
 signals:
     void processedSecs(double secs);
@@ -150,8 +161,9 @@ private:
     rtpstream_id_t id_;
 
     QVector<struct _rtp_packet *>rtp_packets_;
-    QTemporaryFile *samplefile_;
-    QIODevice *tempfile_;
+    QTemporaryFile *sample_file_;       // Stores waveform samples
+    QTemporaryFile *sample_file_frame_; // Stores rtp_packet_info per packet
+    QIODevice *temp_file_;
     struct _GHashTable *decoders_hash_;
     // TODO: It is not used
     //QList<const rtpstream_info_t *>rtpstreams_;
@@ -159,9 +171,12 @@ private:
     double start_abs_offset_;
     double start_rel_time_;
     double stop_rel_time_;
+    qint64 prepend_samples_; // Count of silence samples to match other streams
     AudioRouting audio_routing_;
     bool stereo_required_;
+    quint32 first_sample_rate_;
     quint32 audio_out_rate_;
+    quint32 audio_requested_out_rate_;
     QSet<QString> payload_names_;
     struct SpeexResamplerState_ *audio_resampler_;
     struct SpeexResamplerState_ *visual_resampler_;
@@ -173,6 +188,7 @@ private:
     QVector<double> wrong_timestamp_timestamps_;
     QVector<double> silence_timestamps_;
     qint16 max_sample_val_;
+    qint16 max_sample_val_used_;
     QRgb color_;
 
     int jitter_buffer_size_;
@@ -182,6 +198,11 @@ private:
     void writeSilence(qint64 samples);
     const QString formatDescription(const QAudioFormat & format);
     QString currentOutputDevice();
+
+    void decodeAudio(QAudioDeviceInfo out_device);
+    void decodeVisual();
+    quint32 calculateAudioOutRate(QAudioDeviceInfo out_device, unsigned int sample_rate, unsigned int requested_out_rate);
+    SAMPLE *resizeBufferIfNeeded(SAMPLE *buff, gint32 *buff_bytes, qint64 requested_size);
 
 private slots:
     void outputStateChanged(QAudio::State new_state);

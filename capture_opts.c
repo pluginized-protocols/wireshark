@@ -29,8 +29,8 @@
 #include <wsutil/file_util.h>
 #include <wsutil/ws_pipe.h>
 
-#include "caputils/capture_ifinfo.h"
-#include "caputils/capture-pcap-util.h"
+#include "capture/capture_ifinfo.h"
+#include "capture/capture-pcap-util.h"
 
 #include "ui/filter_files.h"
 
@@ -45,6 +45,7 @@ capture_opts_init(capture_options *capture_opts)
     capture_opts->num_selected                    = 0;
     capture_opts->default_options.name            = NULL;
     capture_opts->default_options.descr           = NULL;
+    capture_opts->default_options.ifname          = NULL;
     capture_opts->default_options.hardware        = NULL;
     capture_opts->default_options.display_name    = NULL;
     capture_opts->default_options.cfilter         = NULL;
@@ -563,6 +564,7 @@ fill_in_interface_opts_from_ifinfo(interface_options *interface_opts,
         interface_opts->descr = NULL;
         interface_opts->display_name = g_strdup(if_info->name);
     }
+    interface_opts->ifname = NULL;
     interface_opts->if_type = if_info->type;
     interface_opts->extcap = g_strdup(if_info->extcap);
 }
@@ -740,6 +742,7 @@ capture_opts_add_iface_opt(capture_options *capture_opts, const char *optarg_str
             interface_opts.descr = NULL;
             interface_opts.hardware = NULL;
             interface_opts.display_name = g_strdup(optarg_str_p);
+            interface_opts.ifname = NULL;
             interface_opts.if_type = capture_opts->default_options.if_type;
             interface_opts.extcap = g_strdup(capture_opts->default_options.extcap);
         }
@@ -1206,6 +1209,7 @@ capture_opts_del_iface(capture_options *capture_opts, guint if_index)
     g_free(interface_opts->descr);
     g_free(interface_opts->hardware);
     g_free(interface_opts->display_name);
+    g_free(interface_opts->ifname);
     g_free(interface_opts->cfilter);
     g_free(interface_opts->timestamp_type);
     g_free(interface_opts->extcap);
@@ -1251,6 +1255,7 @@ collect_ifaces(capture_options *capture_opts)
         if (!device->hidden && device->selected) {
             interface_opts.name = g_strdup(device->name);
             interface_opts.descr = g_strdup(device->friendly_name);
+            interface_opts.ifname = NULL;
             interface_opts.hardware = g_strdup(device->vendor_description);
             interface_opts.display_name = g_strdup(device->display_name);
             interface_opts.linktype = device->active_dlt;

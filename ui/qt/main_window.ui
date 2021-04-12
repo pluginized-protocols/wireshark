@@ -418,6 +418,7 @@
      <addaction name="actionAnalyzeFollowHTTPStream"/>
      <addaction name="actionAnalyzeFollowHTTP2Stream"/>
      <addaction name="actionAnalyzeFollowQUICStream"/>
+     <addaction name="actionAnalyzeFollowSIPCall"/>
     </widget>
     <widget class="QMenu" name="menuConversationFilter">
      <property name="title">
@@ -558,8 +559,8 @@
      <property name="title">
       <string>&amp;RTP</string>
      </property>
-     <addaction name="actionTelephonyRTPStreams"/>
-     <addaction name="actionTelephonyRTPStreamAnalysis"/>
+     <addaction name="actionTelephonyRtpStreams"/>
+     <addaction name="actionTelephonyRtpStreamAnalysis"/>
     </widget>
     <widget class="QMenu" name="menuTelephonySCTP">
      <property name="title">
@@ -1759,6 +1760,14 @@
     <string>QUIC Stream</string>
    </property>
   </action>
+  <action name="actionAnalyzeFollowSIPCall">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>SIP Call</string>
+   </property>
+  </action>
   <action name="actionStatisticsTcpStreamTcptrace">
    <property name="text">
     <string>Time Sequence (tcptrace)</string>
@@ -2579,7 +2588,7 @@
     <string>SIP Flows</string>
    </property>
   </action>
-  <action name="actionTelephonyRTPStreams">
+  <action name="actionTelephonyRtpStreams">
    <property name="text">
     <string>RTP Streams</string>
    </property>
@@ -2833,7 +2842,7 @@
     <string notr="true">Ctrl+Space</string>
    </property>
   </action>
-  <action name="actionTelephonyRTPStreamAnalysis">
+  <action name="actionTelephonyRtpStreamAnalysis">
    <property name="text">
     <string>Stream Analysis</string>
    </property>
